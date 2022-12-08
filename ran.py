@@ -68,6 +68,14 @@ class Ran:
         self.conf = self.conf_json[str(self.numerology)][str(self.prb)]
         self.set_if_freq(self.channel)
         self.set_params(arfcn=self.conf['arfcns'][self.channel])
+        self.pusch_TargetSNRx10 = 150
+        self.pucch_TargetSNRx10 = 200
+        self.ul_prbblack_SNR_threshold = 10
+        self.ulsch_max_frame_inactivity = 0
+        self.pusch_proc_threads = 32
+        self.prach_dtx_threshold = 120
+        self.pucch0_dtx_threshold = 150
+        self.ofdm_offset_divisor = 8
 
         self.set_ips()
         try:
@@ -131,7 +139,7 @@ class Ran:
             # gdb override numa
             pre_path = f'gdb --args '
         executable = f"{OAI_PATH}/cmake_targets/ran_build/build/nr-softmodem "
-        oai_args = [f"-O {BASE_CONF}", "--sa", "--usrp-tx-thread-config 1"]
+        oai_args = [f"-O {BASE_CONF}", "--usrp-tx-thread-config 1"]
         if self.prb >= 106 and self.numerology == 1:
             oai_args.append("-E")
         # Set cell name and id
@@ -145,8 +153,36 @@ class Ran:
                      f'--gNBs.[0].servingCellConfigCommon.[0].ul_carrierBandwidth {self.prb}',
                      f'--gNBs.[0].servingCellConfigCommon.[0].initialDLBWPlocationAndBandwidth {LABW}',
                      f'--gNBs.[0].servingCellConfigCommon.[0].initialULBWPlocationAndBandwidth {LABW}']
+        if self.args.type == 'donor' or self.args.type == 'du':
+            oai_args += ['--MACRLCs.[0].num_cc 1',
+                         '--MACRLCs.[0].tr_s_preference "local_L1"',
+                         f'--MACRLCs.[0].pusch_TargetSNRx10 {self.pusch_TargetSNRx10}',
+                         f'--MACRLCs.[0].pucch_TargetSNRx10 {self.pucch_TargetSNRx10}',
+                         f'--MACRLCs.[0].ul_prbblack_SNR_threshold {self.ul_prbblack_SNR_threshold}',
+                         f'--MACRLCs.[0].ulsch_max_frame_inactivity {self.ulsch_max_frame_inactivity}',
+                         '--L1s.[0].num_cc 1',
+                         '--L1s.[0].tr_n_preference "local_mac"',
+                         f'--L1s.[0].pusch_proc_threads {self.pusch_proc_threads}',
+                         f'--L1s.[0].prach_dtx_threshold {self.prach_dtx_threshold}',
+                         f'--L1s.[0].pucch0_dtx_threshold {self.pucch0_dtx_threshold}',
+                         f'--L1s.[0].ofdm_offset_divisor {self.ofdm_offset_divisor}',
+                         '--RUs.[0].local_rf "yes"'
+                         '--RUs.[0].nb_tx 1'
+                         '--RUs.[0].nb_rx 1'
+                         '--RUs.[0].att_tx 0'
+                         '--RUs.[0].att_rx 0'
+                         '--RUs.[0].bands [78]'
+                         '--RUs.[0].max_pdschReferenceSignalPower -27'
+                         '--RUs.[0].max_rxgain 114'
+                         '--RUs.[0].eNB_instances [0]'
+                         '--RUs.[0].bf_weights [0x00007fff, 0x0000, 0x0000, 0x0000]'
+                         '--RUs.[0].clock_src "external"'
+                         '--RUs.[0].time_src "external"'
+                         f'--RUs.[0].if_freq {if_freq}L'
+                         '--THREAD_STRUCT.[0].parallel_config "PARALLEL_SINGLE_THREAD"',
+                         '--THREAD_STRUCT.[0].worker_config "WORKER_ENABLE"']
         # Set F1 parameters
-        if self.args.type == 'cu':
+        elif self.args.type == 'cu':
             oai_args += ['--gNBs.[0].tr_s_preference "f1"',
                          '--gNBs.[0].local_s_if_name "lo"',
                          f'--gNBs.[0].local_s_address "{self.main_ip}"',
@@ -155,10 +191,10 @@ class Ran:
                          '--gNBs.[0].local_s_portd 2252',
                          '--gNBs.[0].remote_s_portc 500',
                          '--gNBs.[0].remote_s_portd 2252']
+        if self.args.type == 'donor':
+            oai_args += ['--MACRLCs.[0].tr_n_preference "local_RRC"']
         elif self.args.type == 'du':
-            oai_args += ['--MACRLCs.[0].num_cc 1',
-                         '--MACRLCs.[0].tr_s_preference "local_L1"',
-                         '--MACRLCs.[0].tr_n_preference "f1"',
+            oai_args += ['--MACRLCs.[0].tr_n_preference "f1"',
                          '--MACRLCs.[0].local_s_if_name "lo"',
                          f'--MACRLCs.[0].local_n_address "{self.main_ip}"',
                          f'--MACRLCs.[0].remote_n_address "{self.f1_remote_node}"',
@@ -166,8 +202,9 @@ class Ran:
                          '--MACRLCs.[0].local_s_portd 2152',
                          '--MACRLCs.[0].remote_s_portc 501',
                          '--MACRLCs.[0].remote_s_portd 2152']
-        elif self.args.mode == 'phy-test':
-            oai_args += [f'--phy-test {self.phytest}']
+        oai_args += [f'--{self.mode}'
+        if self.mode == 'phy-test':
+            oai_args += [f'{self.phytest}']
         # Set AMF parameters
         # BUG: this cli command is not working, wait for answer from OAI
         oai_args += [f'--gNBs.[0].amf_ip_address.[0].ipv4 {AMF_IP}',
@@ -263,7 +300,7 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--type',
                         required=True,
                         choices=['donor', 'relay', 'ue', 'scan', 'cu', 'du'])
-    parser.add_argument('-f', '--f1_remote_node',
+    parser.add_argument('-F', '--f1_remote_node',
                         help='Address of F1 remote node address')
     parser.add_argument('-m', '--mode',
                         required=True,
